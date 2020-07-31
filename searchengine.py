@@ -1,18 +1,17 @@
 import urllib2
 from BeautifulSoup import *
 from urlparse import urljoin
-from pysqlite2 import dbapi2 as sqlite
+import sqlite3
 import nn
 mynet=nn.searchnet('nn.db')
 
 # Create a list of words to ignore
 ignorewords={'the':1,'of':1,'to':1,'and':1,'a':1,'in':1,'is':1,'it':1}
 
-
 class crawler:
   # Initialize the crawler with the name of database
   def __init__(self,dbname):
-    self.con=sqlite.connect(dbname)
+    self.con=sqlite3.connect(dbname)
   
   def __del__(self):
     self.con.close()
@@ -52,13 +51,11 @@ class crawler:
       if word in ignorewords: continue
       wordid=self.getentryid('wordlist','word',word)
       self.con.execute("insert into wordlocation(urlid,wordid,location) values (%d,%d,%d)" % (urlid,wordid,i))
-  
 
-  
   # Extract the text from an HTML page (no tags)
   def gettextonly(self,soup):
     v=soup.string
-    if v==Null:   
+    if v== None:
       c=soup.contents
       resulttext=''
       for t in c:
@@ -73,7 +70,6 @@ class crawler:
     splitter=re.compile('\\W*')
     return [s.lower() for s in splitter.split(text) if s!='']
 
-    
   # Return true if this url is already indexed
   def isindexed(self,url):
     return False
@@ -169,7 +165,7 @@ class crawler:
 
 class searcher:
   def __init__(self,dbname):
-    self.con=sqlite.connect(dbname)
+    self.con=sqlite3.connect(dbname)
 
   def __del__(self):
     self.con.close()
@@ -302,3 +298,8 @@ class searcher:
     nnres=mynet.getresult(wordids,urlids)
     scores=dict([(urlids[i],nnres[i]) for i in range(len(urlids))])
     return self.normalizescores(scores)
+
+
+
+
+
