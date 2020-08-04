@@ -1,3 +1,4 @@
+#coding=utf-8
 import urllib2
 from BeautifulSoup import *
 from urlparse import urljoin
@@ -12,6 +13,7 @@ class crawler:
   # Initialize the crawler with the name of database
   def __init__(self,dbname):
     self.con=sqlite3.connect(dbname)
+    self.indexed_memo = {}
   
   def __del__(self):
     self.con.close()
@@ -44,6 +46,7 @@ class crawler:
     
     # Get the URL id
     urlid=self.getentryid('urllist','url',url)
+    self.indexed_memo[url] = True
     
     # Link each word to this url
     for i in range(len(words)):
@@ -51,6 +54,7 @@ class crawler:
       if word in ignorewords: continue
       wordid=self.getentryid('wordlist','word',word)
       self.con.execute("insert into wordlocation(urlid,wordid,location) values (%d,%d,%d)" % (urlid,wordid,i))
+
 
   # Extract the text from an HTML page (no tags)
   def gettextonly(self,soup):
@@ -71,12 +75,16 @@ class crawler:
     return [s.lower() for s in splitter.split(text) if s!='']
 
   # Return true if this url is already indexed
-  def isindexed(self,url):
+  def isindexed(self, url):
+    url_row_id = self.con.execute("select rowid from urllist where url='%s' " %url).fetchone()
+    if url_row_id != None:
+      v = self.con.execute("select rowid from wordlocation where urlid=%d " % url_row_id[0]).fetchone()
+      if v != None:return True
     return False
   
   # Add a link between two pages
   def addlinkref(self,urlFrom,urlTo,linkText):
-    words=self.separateWords(linkText)
+    words=self.separatewords(linkText)
     fromid=self.getentryid('urllist','url',urlFrom)
     toid=self.getentryid('urllist','url',urlTo)
     if fromid==toid: return
@@ -90,10 +98,12 @@ class crawler:
   # Starting with a list of pages, do a breadth
   # first search to the given depth, indexing pages
   # as we go
-  def crawl(self,pages,depth=2):
+  def crawl(self,pages,depth=1):
     for i in range(depth):
       newpages={}
       for page in pages:
+        if self.isindexed(page):
+          continue
         try:
           c=urllib2.urlopen(page)
         except:
@@ -107,16 +117,17 @@ class crawler:
           for link in links:
             if ('href' in dict(link.attrs)):
               url=urljoin(page,link['href'])
-              if url.find("'")!=-1: continue
-              url=url.split('#')[0]  # remove location portion
-              if url[0:4]=='http' and not self.isindexed(url):
+              if url.find("'")!=-1: continue # if ' in url, the wrong format
+              url=url.split('#')[0]  # remove page inner location portion
+              if url[0:4]=='http' and not self.isindexed(url): # both http and https are included!
                 newpages[url]=1
               linkText=self.gettextonly(link)
               self.addlinkref(page,url,linkText)
           self.dbcommit()
-        except:
+        except Exception as e:
+          print e
           print "Could not parse page %s" % page
-
+      print(pages)
       pages=newpages # in this way, we use bfs to traverse the pages at the depth of 2
 
   # Create the database tables
@@ -171,6 +182,11 @@ class searcher:
     self.con.close()
 
   def getmatchrows(self,q):
+    """
+
+    :param q: the  query words that user input
+    :return: a tuple, [0]:the format: urlid and the locations...[1]:the word ids
+    """
     # Strings to build the query
     fieldlist='w0.urlid'
     tablelist=''  
@@ -197,24 +213,28 @@ class searcher:
         clauselist+='w%d.wordid=%d' % (tablenumber,wordid)
         tablenumber+=1
 
+
     # Create the query from the separate parts
     fullquery='select %s from %s where %s' % (fieldlist,tablelist,clauselist)
     print fullquery
+    if tablelist == '':
+      raise RuntimeError("No result")
     cur=self.con.execute(fullquery)
     rows=[row for row in cur]
-
     return rows,wordids
 
   def getscoredlist(self,rows,wordids):
     totalscores=dict([(row[0],0) for row in rows])
 
     # This is where we'll put our scoring functions
-    weights=[(1.0,self.locationscore(rows)), 
-             (1.0,self.frequencyscore(rows)),
-             (1.0,self.pagerankscore(rows)),
-             (1.0,self.linktextscore(rows,wordids)),
-             (5.0,self.nnscore(rows,wordids))]
-    for (weight,scores) in weights:
+    weights=[
+      # (1.0,self.locationscore(rows)),
+       (1.0,self.frequencyscore(rows)),
+       # (1.0,self.pagerankscore(rows)),
+       # (1.0,self.linktextscore(rows,wordids)),
+       # (5.0,self.nnscore(rows,wordids))
+             ]
+    for (weight,scores) in weights:  # scores 的格式是:
       for url in totalscores:
         totalscores[url]+=weight*scores[url]
 
@@ -244,7 +264,7 @@ class searcher:
       if maxscore==0: maxscore=vsmall
       return dict([(u,float(c)/maxscore) for (u,c) in scores.items()])
 
-  def frequencyscore(self,rows):
+  def frequencyscore(self,rows): # rows 的格式是: url: id1, id2, id3
     counts=dict([(row[0],0) for row in rows])
     for row in rows: counts[row[0]]+=1
     return self.normalizescores(counts)
@@ -254,7 +274,7 @@ class searcher:
     for row in rows:
       loc=sum(row[1:])
       if loc<locations[row[0]]: locations[row[0]]=loc
-    
+
     return self.normalizescores(locations,smallIsBetter=1)
 
   def distancescore(self,rows):
@@ -271,7 +291,7 @@ class searcher:
 
   def inboundlinkscore(self,rows):
     uniqueurls=dict([(row[0],1) for row in rows])
-    inboundcount=dict([(u,self.con.execute('select count(*) from link where toid=%d' % u).fetchone()[0]) for u in uniqueurls])   
+    inboundcount=dict([(u,self.con.execute('select count(*) from link where toid=%d' % u).fetchone()[0]) for u in uniqueurls])
     return self.normalizescores(inboundcount)
 
   def linktextscore(self,rows,wordids):
@@ -298,6 +318,78 @@ class searcher:
     nnres=mynet.getresult(wordids,urlids)
     scores=dict([(urlids[i],nnres[i]) for i in range(len(urlids))])
     return self.normalizescores(scores)
+
+#######################################################################################
+#######################################################################################
+##  以下是测试内容
+#######################################################################################
+#######################################################################################
+
+
+def test_get_index():
+  html = "<p>Hello</p>Wow"
+  crawler_obj = crawler("se.db")
+  soup = BeautifulSoup(html)
+  txt = crawler_obj.gettextonly(soup)
+  print("****")
+  print(txt)
+
+
+def test_format():
+  print("abc '%s'" % "123")
+  print("abc %d" % 123)
+
+
+def test_build_crawl():
+  crawler_obj = crawler("se.db")
+  pages = ['http://www.chinadaily.com.cn/a/202008/01/WS5f24ceb2a31083481725d8df.html']
+  crawler_obj.crawl(pages, 2)
+
+
+def test_get_wordlocation():
+  crawler_obj = crawler("se.db")
+  locations = [row for row in  crawler_obj.con.execute("select rowid from wordlocation where rowid=2")]
+  print(locations)
+
+
+def test_getmatchrows():
+  # search_res, ids = searcher("se.db").getmatchrows("china fight")
+  # print(search_res)
+  # print(ids)
+  search_res = searcher("se.db").getmatchrows("china fight flood")
+  print(search_res[0])
+  print(search_res[1])
+
+
+def test_return_tuple():
+  def f1():
+    return 1,2
+  a = f1()
+  print(a)
+  print("***")
+  a, b = f1()
+  print(a,b)
+
+def test_query():
+  search_res = searcher("se.db").query("china fight")
+  print(search_res)
+
+def test_ls2dict():
+  ls = [(1,2),(3,2),(4,3)]
+  lsd = dict(ls)
+  print(lsd)
+
+
+if __name__ == '__main__':
+  # test_get_index()
+  # test_format()
+  # test_build_crawl()
+  # test_get_wordlocation()
+  # test_getmatchrows()
+  # test_return_tuple()
+  test_query()
+  # test_ls2dict()
+
 
 
 
