@@ -3,8 +3,8 @@ import urllib2
 from BeautifulSoup import *
 from urlparse import urljoin
 import sqlite3
-import nn
-mynet=nn.searchnet('nn.db')
+# import nn
+# mynet=nn.searchnet('nn.db')
 
 # Create a list of words to ignore
 ignorewords={'the':1,'of':1,'to':1,'and':1,'a':1,'in':1,'is':1,'it':1}
